@@ -1,5 +1,6 @@
 import requests
-from boto.s3.connection import S3Connection
+from boto3.session import Session
+import botocore
 import argparse
 import multiprocessing
 import sys
@@ -12,11 +13,17 @@ def find_matching_files(bucket, prefixes):
     Returns a set of files in a given S3 bucket that match the specificed file
     path prefixes
     """
-    return set(key for prefix in prefixes for key in bucket.list(prefix))
+    return set(key for prefix in prefixes for key in bucket.objects.filter(Prefix=prefix))
 
 def get_bucket(access_key, secret_key, bucket):
     """Gets an S3 bucket"""
-    return S3Connection(access_key, secret_key).get_bucket(bucket)
+    session = Session(
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name='ap-northeast-1')
+    s3 = session.resource("s3")
+    bucket = s3.Bucket(bucket)
+    return bucket
 
 def check_headers(bucket, queue, verbose, dryrun):
     """
@@ -33,31 +40,31 @@ def check_headers(bucket, queue, verbose, dryrun):
         if key_name == None:
             break
 
-        key = bucket.lookup(key_name)
+        key = bucket.Object(key_name)
 
         if not key:
-            print >> sys.stderr, "%s: Could not lookup" % key.name
+            print >> sys.stderr, "%s: Could not lookup" % key.key
             continue
 
         content_type = key.content_type
-        expected_content_type, _ = mimetypes.guess_type(key.name)
+        expected_content_type, _ = mimetypes.guess_type(key.key)
 
         if not expected_content_type:
-            print >> sys.stderr, "%s: Could not guess content type" % key.name
+            print >> sys.stderr, "%s: Could not guess content type" % key.key
             continue
 
         if content_type == expected_content_type:
             if verbose:
-                print "%s: Matches expected content type" % key.name
+                print "%s: Matches expected content type" % key.key
         else:
-            print "%s: Current content type (%s) does not match expected (%s); fixing" % (key.name, content_type, expected_content_type)
+            print "%s: Current content type (%s) does not match expected (%s); fixing" % (key.key, content_type, expected_content_type)
             if not dryrun:
                 metadata = {"Content-Type": expected_content_type}
 
                 if key.content_disposition:
                     metadata["Content-Disposition"] = key.content_disposition
 
-                key.copy(key.bucket, key.name, preserve_acl=True, metadata=metadata)
+                key.copy_from(CopySource={'Bucket':key.bucket_name, 'Key':key.key}, MetadataDirective="REPLACE", Metadata=metadata)
 
 def main():
     parser = argparse.ArgumentParser(description="Fixes the content-type of assets on S3")
@@ -83,7 +90,7 @@ def main():
     
     # Add the items to the queue
     for key in find_matching_files(bucket, args.prefixes):
-        queue.put(key.name)
+        queue.put(key.key)
 
     # Add None's to the end of the queue, which acts as a signal for the
     # proceses to finish

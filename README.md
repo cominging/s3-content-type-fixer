@@ -1,4 +1,4 @@
-# S3 Content Type Fixer #
+# S3 Content Type Fixer (boto3) #
 
 This script will scan an S3 bucket to find files with bad content-types and
 fix them.
