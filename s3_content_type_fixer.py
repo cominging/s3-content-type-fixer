@@ -1,10 +1,14 @@
-import requests
-from boto3.session import Session
-import botocore
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+"""
+Fixes wrong Content-Type on Amazon S3 services.
+"""
+
 import argparse
-import multiprocessing
 import sys
 import mimetypes
+import multiprocessing
+from boto3.session import Session
 
 BLOCK_TIME = 60 * 60
 
@@ -21,8 +25,8 @@ def get_bucket(access_key, secret_key, bucket):
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name='ap-northeast-1')
-    s3 = session.resource("s3")
-    bucket = s3.Bucket(bucket)
+    s3r = session.resource("s3")
+    bucket = s3r.Bucket(bucket)
     return bucket
 
 def check_headers(bucket, queue, verbose, dryrun):
@@ -34,16 +38,19 @@ def check_headers(bucket, queue, verbose, dryrun):
     while True:
         try:
             key_name = queue.get(BLOCK_TIME)
-        except:
+        except :
             break
 
-        if key_name == None:
+        if key_name is None:
             break
 
         key = bucket.Object(key_name)
 
         if not key:
             print >> sys.stderr, "%s: Could not lookup" % key.key
+            continue
+
+        if key.key.endswith('/'): # skip directories
             continue
 
         content_type = key.content_type
@@ -57,25 +64,44 @@ def check_headers(bucket, queue, verbose, dryrun):
             if verbose:
                 print "%s: Matches expected content type" % key.key
         else:
-            print "%s: Current content type (%s) does not match expected (%s); fixing" % (key.key, content_type, expected_content_type)
+            print "%s: Current content type (%s) does not match expected (%s); fixing" \
+                % (key.key, content_type, expected_content_type)
             if not dryrun:
-                metadata = {"Content-Type": expected_content_type}
+                metadata = key.metadata
+
+                # Because metadata['Content-Type'] will be shown as 'x-amz-meta-content-type'
+                # in console. This is not what we want.
+                if 'Content-Type' in metadata:
+                    metadata["Content-Type"] = expected_content_type
 
                 if key.content_disposition:
                     metadata["Content-Disposition"] = key.content_disposition
 
-                key.copy_from(CopySource={'Bucket':key.bucket_name, 'Key':key.key}, MetadataDirective="REPLACE", Metadata=metadata)
+                key.copy_from(
+                    Bucket=key.bucket_name,
+                    Key=key.key,
+                    CopySource=key.bucket_name + '/' + key.key,
+                    MetadataDirective="REPLACE",
+                    Metadata=metadata,
+                    ContentType=expected_content_type)
 
 def main():
+    """
+    main function
+    """
     parser = argparse.ArgumentParser(description="Fixes the content-type of assets on S3")
 
     parser.add_argument("--access-key", "-a", type=str, required=True, help="The AWS access key")
     parser.add_argument("--secret-key", "-s", type=str, required=True, help="The AWS secret key")
     parser.add_argument("--bucket", "-b", type=str, required=True, help="The S3 bucket to check")
-    parser.add_argument("--prefixes", "-p", type=str, default=[""], required=False, nargs="*", help="File path prefixes to check")
-    parser.add_argument("--workers", "-w", type=int, default=4, required=False, help="The number of workers")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    parser.add_argument("--dryrun", "-d", action="store_true", default=False, required=False,help="Add this for a dry run (don't change any file)")
+    parser.add_argument("--prefixes", "-p", type=str, default=[""], required=False, nargs="*",
+                        help="File path prefixes to check")
+    parser.add_argument("--workers", "-w", type=int, default=4, required=False,
+                        help="The number of workers")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Verbose output")
+    parser.add_argument("--dryrun", "-d", action="store_true", default=False, required=False,
+                        help="Add this for a dry run (don't change any file)")
 
     args = parser.parse_args()
     queue = multiprocessing.Queue()
@@ -84,10 +110,11 @@ def main():
 
     # Start the workers
     for _ in xrange(args.workers):
-        p = multiprocessing.Process(target=check_headers, args=(bucket, queue, args.verbose, args.dryrun))
-        p.start()
-        processes.append(p)
-    
+        proc = multiprocessing.Process(
+            target=check_headers, args=(bucket, queue, args.verbose, args.dryrun))
+        proc.start()
+        processes.append(proc)
+
     # Add the items to the queue
     for key in find_matching_files(bucket, args.prefixes):
         queue.put(key.key)
@@ -97,10 +124,10 @@ def main():
     for _ in xrange(args.workers):
         queue.put(None)
 
-    for p in processes:
+    for proc in processes:
         # Wait for the processes to finish
         try:
-            p.join()
+            proc.join()
         except KeyboardInterrupt:
             pass
 
