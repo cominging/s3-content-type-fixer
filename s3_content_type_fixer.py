@@ -9,6 +9,7 @@ import sys
 import mimetypes
 import multiprocessing
 from boto3.session import Session
+import os
 
 BLOCK_TIME = 60 * 60
 
@@ -55,6 +56,18 @@ def check_headers(bucket, queue, verbose, dryrun):
 
         content_type = key.content_type
         expected_content_type, _ = mimetypes.guess_type(key.key)
+
+        # ignores
+        if key.key.endswith('Thumbs.db') or key.key.endswith('.lst'):
+            continue
+        # override
+        override_mime = {
+            ".pfb": "application/x-font-type1",
+            ".pfm": "application/x-font-type1"
+        }
+        extension = os.path.splitext(key.key)[1]
+        if override_mime.has_key(extension):
+            expected_content_type = override_mime[extension]
 
         if not expected_content_type:
             print >> sys.stderr, "%s: Could not guess content type" % key.key
